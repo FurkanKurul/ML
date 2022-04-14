@@ -1,0 +1,783 @@
+# !python --version
+# ! pip install PyAstronomy
+# ! pip install tensorflow --user
+# ! pip install -U scikit-learn --user
+# ! pip install molml --user
+# ! pip install plotly --user
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# Importing Periodic Table
+from __future__ import print_function, division
+from PyAstronomy import pyasl
+an = pyasl.AtomicNo()
+
+# Importing tensorflow
+import tensorflow as tf
+from tensorflow import keras
+from keras.layers import Dense, Dropout
+from keras.optimizer_v2 import gradient_descent as SGD
+
+# Importing sklearn
+import sklearn as sklearn
+from sklearn.model_selection import KFold
+from keras.wrappers.scikit_learn import KerasRegressor
+from sklearn.model_selection import cross_val_score as CV
+import numpy as np
+# keras.__version__
+# sklearn.__version__
+
+# Importing MolML
+from molml.features import CoulombMatrix, BagOfBonds
+# from molml.features import LocalCoulombMatrix
+# from molml.kernel import AtomKernel
+# from molml.utils import LazyValues
+# molml.__version__
+
+from matplotlib import pyplot
+import math
+
+# https://plotly.com/python/line-and-scatter/
+import plotly.express as px
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+previousID = "000000"
+
+# DATASET_DIR is the directory of the all 133885 '.xyz' files
+DATASET_DIR = "C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/"
+
+input_vector = []
+target_vector = []
+individual_target_vector = []
+max_len_vector = 0
+
+# wanted_molecules_file_numbers = []
+desired_files = []
+desired_files.clear()
+desired_files_ID = []
+desired_files_ID.clear()
+
+temp_all_molecules = []
+temp_oxygen_molecules = []
+distInfo = []
+
+def distance_function(x1,y1,z1,x2,y2,z2):
+    
+    return ((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)**(1/2)
+
+# scraping gap (Hartree) value from currently opened file
+def gap_function(lines):
+    
+    _strip = lines[1].strip()
+    _split = _strip.split()
+    
+    gap_value = float(_split[9])
+    
+    return gap_value
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# problematic files: 001460, 001513, 002624, 002993, 003454, 003825, 004095, 004316, 004481, 004611, 004724, 004925, 005005
+
+prob_files = [
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_001460.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_001513.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_002624.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_002993.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_003454.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_003825.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_004095.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_004316.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_004481.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_004611.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_004724.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_004925.xyz',
+    'C:/Users/??????/Desktop/_PHYS400/Dataset/dsgdb9nsd.xyz/dsgdb9nsd_005005.xyz'
+    ]
+
+# scannig first 4000 .xyz files
+for i in range(1, 4000):
+    
+    # selecting a file ID. e.g.: 000004 for dsgdb9nsd_000004.xyz
+    if(i<10):
+        file_ID = "00000%.d" % i
+    elif(i<100):
+        file_ID = "0000%.d" % i
+    elif(i<1000):
+        file_ID = "000%.d" % i
+    elif(i<10000):
+        file_ID = "00%.d" % i
+    elif(i<100000):
+        file_ID = "0%.d" % i
+    else:
+        file_ID = "%.d" % i
+    
+    # naming a directory for current '.xyz' file from dataset folder
+    individual_file_dir = DATASET_DIR + "dsgdb9nsd_" + file_ID + ".xyz"
+    
+    if individual_file_dir in prob_files:
+        # print("Yes")
+        continue 
+       
+    # reading the selected file
+    file = open(individual_file_dir, 'r')
+    
+    # checking if file contains 'O' molecules or not
+    lines = file.readlines()
+    for i in range(2, len(lines)):
+        
+        # if it contains O molecules, pick this file 
+        # TODO: replace 'O' with input string (which molecule do you want to search?)
+        if((lines[i][0] == 'O') & (previousID != file_ID)):
+            desired_files.append(file_ID)
+            desired_files_ID.append(int(file_ID))
+            previousID = file_ID
+            
+        # if not, continue for searching
+        
+    # if we close 'file' after recording file_ID, scanning does not take so much time.
+    file.close()
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# ~~ VECTOR ~~ for input vector
+# ~~ GAP VALUES ~~ for y_train
+
+# List for all Mulliken partial charge (e) of atom
+mulliken_values = []
+
+# List for number of atoms we have in the desired range
+# "PARENT FEATURE" --> "CHILD FEATURES: atomic numbers & distance values"
+atom_numbers_in_range = []
+
+# List for atomic numbers
+# CHILD FEATURE 1 
+atomic_numbers = []
+
+# dist values 
+# CHILD FEATURE 2
+all_distance_values = []
+
+elements = []
+elements_coordinates = []
+
+#error_num = 0
+
+# for i in range (0, len(desired_files)):
+# for i in range(0, 25):
+# len(desired_files)
+for i in range (0, 3000):
+    
+    temp_element = []
+    temp_molecule_position = []
+    
+    desired_file_directory =  DATASET_DIR + "dsgdb9nsd_" + desired_files[i] + ".xyz"
+    file = open(desired_file_directory, 'r')
+    lines = file.readlines()
+    
+    gap_value = gap_function(lines)
+    
+    for a in range(2, len(lines)): 
+        
+        temp_element_coordinates = []
+        
+        # checking if we have any char (meanign: We are only looking for lines that have molecules )
+        if(lines[a][0].isalpha()):
+            
+            _strip = lines[a].strip()
+            _split = _strip.split()
+            
+            temp_element.append(_split[0])                    # element name
+            #temp_element_coordinates.append(float(_split[1])) # x-coordinate
+            #temp_element_coordinates.append(float(_split[2])) # y-coordinate
+            #temp_element_coordinates.append(float(_split[3])) # z-coordinate
+            
+            try:
+                temp_element_coordinates.append(float(_split[1])) # x-coordinate
+            except:
+                print("Step ID:", i, "|| X || File ID", desired_files[i])
+                
+            try:
+                temp_element_coordinates.append(float(_split[2])) # y-coordinate
+            except:
+                print("Step ID:", i, "|| Y || File ID", desired_files[i])
+                
+            try:
+                temp_element_coordinates.append(float(_split[3])) # z-coordinate
+            except:
+                print("Step ID:", i, "|| Z || File ID", desired_files[i])
+                
+  
+            # checking if lines start with "O" letter
+            if(lines[a][0] == 'O'):
+                temp_oxygen_molecules.append(_split)
+                
+                #  Mulliken partial charge (e) of atom 
+                mulliken_values.append(float(_split[4]))
+                
+                # recording (the same) gap_value (-if needed-) for every oxygen molecule
+                target_vector.append(gap_value)
+            else:
+                temp_all_molecules.append(_split)
+                
+        # if we do not have any char, break the process
+        else:
+            break
+            
+        temp_molecule_position.append(temp_element_coordinates)
+    
+    elements.append(temp_element)
+    elements_coordinates.append(temp_molecule_position)
+           
+    # distance calculation
+    for j in range (0, len(temp_oxygen_molecules)):
+        
+        atom_number_in_radius = 0
+        atoms_in_range = []
+        desired_distance_values = []
+        temp_element_names = []
+        
+        # --------------------------------
+        
+        for k in range (0, len(temp_all_molecules)):
+            distance = distance_function (float(temp_oxygen_molecules[j][1]),float(temp_oxygen_molecules[j][2]),float(temp_oxygen_molecules[j][3]),
+                                         float(temp_all_molecules[k][1]),float(temp_all_molecules[k][2]),float(temp_all_molecules[k][3]))
+            distInfo.append(distance)
+            if((distance < 2.5) & (distance!=0.0)):
+                #print(distance)   
+                atom_number_in_radius = atom_number_in_radius + 1
+                
+                desired_distance_values.append(distance)
+                
+                atoms_in_range.append(temp_all_molecules[k][0])
+                
+                for b in range(1, len(desired_distance_values)):
+                    if(desired_distance_values[b-1] == desired_distance_values[b]):
+                        desired_distance_values.remove(distance_values[b])
+                        
+        # atom_numbers_in_range
+        atom_numbers_in_range.append(atom_number_in_radius)
+        
+        # atomic numbers (name of atoms)
+        for c in range(0, len(atoms_in_range)):
+            # print(i+1, ".Atom: ",atoms_in_range[i])
+            temp_element_names.append(an.getAtomicNo(atoms_in_range[c]))
+         
+        atomic_numbers.append(temp_element_names)
+        # all dist values for list
+        all_distance_values.append(desired_distance_values)
+        
+    individual_target_vector.append(gap_value)
+    
+    file.close()
+    
+    temp_oxygen_molecules.clear()
+    temp_all_molecules.clear()   
+    
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# finding how many zero-s we neeed to add
+proxy_atom_number_list = atom_numbers_in_range.copy()
+proxy_atom_number_list.sort(reverse = True)
+proxy_atom_number_list[0:4]
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+for i in range(0, len(atom_numbers_in_range)):
+    
+    # a unit has all related data for one oxygen atom
+    unit = []
+    
+    # adding mulliken value into the unit
+    unit.append(mulliken_values[i])
+    
+    # adding atom numbers in the desired range (2.5 Ångström) into the unit
+    unit.append(atom_numbers_in_range[i])
+    
+    # adding zero-s for atomic_numbers feature
+    for j in range(len(atomic_numbers[i]), proxy_atom_number_list[0]):
+        atomic_numbers[i].append(0)
+        
+    # adding atomic numbers into the unit
+    for k in range(0, len(atomic_numbers[i])):
+        unit.append(atomic_numbers[i][k])
+                   
+    # adding zero-s for distance values feature
+    for l in range(len(all_distance_values[i]), proxy_atom_number_list[0]):
+        all_distance_values[i].append(0)
+        
+    # adding distance values into the unit
+    for m in range(0, len(all_distance_values[i])):
+         unit.append(all_distance_values[i][m])
+    
+    input_vector.append(unit)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# ~ Deep Neural Network ~ #
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+x_train_final = np.array(input_vector[:2000])
+y_train_final = np.array(target_vector[:2000])
+
+len(x_train_final)
+#y_train_final
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+def nn_model(x_data, y_target, neuron_number):
+    
+    model = keras.models.Sequential([
+        
+        keras.layers.Dense(neuron_number, kernel_initializer='lecun_normal', activation='selu'),
+        keras.layers.Dropout(rate=0.2),
+        keras.layers.Dense(neuron_number/2, kernel_initializer='lecun_normal', activation='selu'),
+        keras.layers.Dropout(rate=0.2),
+        keras.layers.Dense(neuron_number/2, kernel_initializer='lecun_normal', activation='selu'),
+        
+        keras.layers.Dense(1) 
+    ])
+    
+    model.compile(optimizer='Adam', loss='mse', metrics=['mse'])
+    
+    # k-fold cross-validation
+    kf = KFold(n_splits = 3)
+    kf.get_n_splits(x_data)
+    
+    k_fold = 0
+    for train_index, test_index in kf.split(x_data):
+        
+        k_fold= k_fold + 1
+        print("")
+        print("k-fold: ", k_fold)
+        print("")
+        
+        X_train, X_test = x_data[train_index], x_data[test_index]
+        Y_train, y_test = y_target[train_index], y_target[test_index]
+    
+        history = model.fit(X_train, Y_train, batch_size = 12, epochs=64, validation_data = (X_test, y_test))
+        
+    pyplot.plot(history.history['mse'])
+    pyplot.show()
+        
+    return history, model
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+h, model = nn_model(x_train_final, y_train_final, 128)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+new_data_for_prediction = np.array(input_vector[2000:3000])
+y_true = np.array(target_vector[2000:3000])
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# prediction
+y_pred = model.predict(new_data_for_prediction)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+prediction_analysis = []
+
+y_pred_UF = []
+percente_error_analysis_UF = []
+
+for i in range (0, 1000):
+    single_unit = []
+    
+    percente_error = (y_pred[i][0]-y_true[i])/y_true[i]*100
+    percente_error_two_digit = float("{:.2f}".format(percente_error))
+    
+    single_unit.append(y_pred[i][0])
+    single_unit.append(y_true[i])
+    single_unit.append(percente_error_two_digit)
+    
+    y_pred_UF.append(y_pred[i][0])
+    percente_error_analysis_UF.append(percente_error_two_digit)
+    
+    prediction_analysis.append(single_unit)
+    
+prediction_analysis[:150]
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+fig_UF = px.scatter(x = y_pred_UF, y= percente_error_analysis_UF)
+fig_UF.update_traces(marker_size=8)
+fig_UF.show()
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+desired_data_number = 0 
+for i in range(0, len(percente_error_analysis_UF)):
+    
+    # if((percente_error_analysis_UF[i] > -10) & (percente_error_analysis_UF[i] < 10)):
+    if((percente_error_analysis_UF[i] > -20) & (percente_error_analysis_UF[i] < 20)):
+        desired_data_number = desired_data_number + 1
+        
+percentage = desired_data_number / len(percente_error_analysis_UF) *100
+percente_two_digit = float("{:.2f}".format(percentage))
+
+print(percente_two_digit, "%")
+
+# first 400
+# 128 neuron - range: +-20% --> 80.75 %
+# 128 neuron - range: +-20% --> 84.25 %
+# 128 neuron - range: +-10% --> 47.5 %
+
+# 22 neuron - range: +-10% --> 34.25 %
+# 128 neuron - range: +-10% --> 52.5 %
+
+# first 2000
+# 128 neuron - range: +-10% --> 34.7 %
+
+# %10 --- 50.8 %
+# %20 --- 83.8 %
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# elements = [ ['O', 'H', 'H'], ...]
+# elements_coordinates = [ [ [-0.0343604951, 0.9775395708, 0.0076015923], [0.0647664923, 0.0205721989, 0.0015346341], [0.8717903737, 1.3007924048, 0.0006931336] ] ]
+# molecules = [ [elements[0], elements_coordinates[0]], [elements[1], elements_coordinates[1]], ... ]
+
+all_TCM = []
+
+for i in range(0, len(elements)):
+    feat_CM = CoulombMatrix()
+    molecule = (elements[i], elements_coordinates[i])
+    feat_CM.fit([molecule])
+    TCM = feat_CM.transform([molecule])
+    all_TCM.append(TCM)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+all_CM_matrices = []
+
+prev_dim = 0
+max_dim = 0
+
+for i in range(0, len(all_TCM)):
+    dim = int(math.sqrt(len(all_TCM[i][0])))
+    
+    if(dim > prev_dim):
+        max_dim = dim
+        prev_dim = dim
+        
+        if(max_dim == 24):
+            print("Matrix_ID: ", i)
+    
+    temp_matrix = np.array(all_TCM[i][0]).reshape(dim, dim)
+    all_CM_matrices.append(temp_matrix)
+    
+# Matrix_ID:  801  --> 21 x 21
+# Matrix_ID:  4572 --> 24 x 24
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# padding a NumPy array(all_CM_matrices) with zeroes
+
+for i in range (0, len(all_CM_matrices)):
+    an_array = np.array(all_CM_matrices[i])
+    shape = np.shape(an_array)
+    padded_array = np.zeros((max_dim, max_dim))
+    padded_array[:shape[0],:shape[1]] = an_array 
+    all_CM_matrices[i]= padded_array
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+input_flatten_CM = []
+
+for i in range(0, len(all_CM_matrices)):
+    
+    temp_CM = []
+    
+    temp_CM = np.array(all_CM_matrices[i])
+    fltn_temp_CM = temp_CM.flatten()
+    
+    input_flatten_CM.append(fltn_temp_CM)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+x_train_CM = np.array(input_flatten_CM[:2000])
+
+# VERY IMPORTANT
+# y_target_CM = np.array(target_vector[:3000])
+y_target_CM = np.array(individual_target_vector[:2000])
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+h_CM, model_CM = nn_model(x_train_CM, y_target_CM, 128)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+new_data_for_prediction_CM = np.array(input_flatten_CM[2000:3000])
+
+# y_true = np.array(target_vector[3750:5000])
+y_true_CM = np.array(individual_target_vector[2000:3000])
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+y_pred_CM = model_CM.predict(new_data_for_prediction_CM)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+prediction_analysis_CM = []
+
+y_pred_analysis_CM = []
+percente_error_analysis_CM = []
+
+for i in range (0, 1000):
+    single_unit = []
+    
+    percente_error = (y_pred_CM[i][0]-y_true_CM[i])/y_true_CM[i]*100
+    percente_error_two_digit = float("{:.2f}".format(percente_error))
+    
+    single_unit.append(y_pred_CM[i][0])
+    single_unit.append(y_true_CM[i])
+    single_unit.append(percente_error_two_digit)
+    
+    y_pred_analysis_CM.append(y_pred_CM[i][0])
+    percente_error_analysis_CM.append(percente_error_two_digit)
+    
+    prediction_analysis_CM.append(single_unit)
+prediction_analysis_CM
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+fig_CM = px.scatter(x = y_pred_analysis_CM, y= percente_error_analysis_CM)
+fig_CM.update_traces(marker_size=8)
+fig_CM.show()
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+desired_data_number_CM = 0 
+for i in range(0, len(percente_error_analysis_CM)):
+    
+    #if((percente_error_analysis_CM[i] > -10) & (percente_error_analysis_CM[i] < 10)):
+    if((percente_error_analysis_CM[i] > -20) & (percente_error_analysis_CM[i] < 20)):
+        desired_data_number_CM = desired_data_number_CM + 1
+        
+percentage = desired_data_number_CM / len(percente_error_analysis_CM) *100
+percente_two_digit = float("{:.2f}".format(percentage))
+
+print(percente_two_digit, "%")
+
+# first 400
+# 512 neuron ===> 24.4 %
+# 256 neuron ===> 43.2 %
+# 128 neuron ===> 5.6 %
+# 64 neuron ===> 27.2 %
+
+# 128 neuron ===> 69.2 %
+
+# first 1250
+# 128 neuron ===> 41.04 %
+
+# %10 ===> 56.0 %
+# %20 ===> 89.6 %
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+strange_molecules_ID = []
+for i in range(0, len(percente_error_analysis_CM)):
+    
+    if((y_pred_CM[i][0] > 0.24) & (y_pred_CM[i][0] < 0.26)):
+        strange_molecules_ID.append(i)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+x_list = []
+
+for i in range(0, len(strange_molecules_ID)):
+    x = 1200 + strange_molecules_ID[i]
+    x_list.append(x)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+file_IDs = []
+for i in range(1, len(x_list)):
+    
+    # selecting a file ID. e.g.: 000004 for dsgdb9nsd_000004.xyz
+    if(x_list[i]<10):
+        file_ID = "00000%.d" % x_list[i]
+    elif(x_list[i]<100):
+        file_ID = "0000%.d" % x_list[i]
+    elif(x_list[i]<1000):
+        file_ID = "000%.d" % x_list[i]
+    elif(x_list[i]<10000):
+        file_ID = "00%.d" % x_list[i]
+    elif(x_list[i]<100000):
+        file_ID = "0%.d" % x_list[i]
+    else:
+        file_ID = "%.d" % x_list[i]
+        
+    file_IDs.append(file_ID)
+file_IDs    
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+my_molecules = []
+for i in range (0, len(file_IDs)):
+    
+    desired_file_directory =  DATASET_DIR + "dsgdb9nsd_" + file_IDs[i] + ".xyz"
+    
+    file = open(desired_file_directory, 'r')
+    
+    lines = file.readlines()
+    _strip = lines[len(lines)-1].strip()
+    _split = _strip.split('/')
+    my_molecules.append(_split[1])
+
+my_molecules
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+all_TBB = []
+
+for i in range(0, len(elements)):
+    feat_BB = BagOfBonds()
+    molecule = (elements[i], elements_coordinates[i])
+    feat_BB.fit([molecule], all_TCM[i])
+    TBB = feat_BB.fit_transform([molecule])
+    all_TBB.append(TBB)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+all_BB_list = []
+
+prev_len_BB = 0
+max_len_BB = 0
+
+for i in range(0, len(all_TBB)):
+    
+    len_BB = len(all_TBB[i][0])
+    
+    if(len_BB > prev_len_BB):
+        max_len_BB = len_BB
+        prev_len_BB = len_BB
+        
+        if(max_len_BB == 276):
+            print("Matrix_ID: ", i)
+    
+    temp_bb = []
+    for j in range(0, len_BB):
+        temp_bb.append(all_TBB[i][0][j])
+    all_BB_list.append(temp_bb)
+    
+# max_len_BB: 210 
+# Matrix_ID:  801
+
+# max_len_BB: 276 
+# Matrix_ID:  4572
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+for i in range(0, len(all_BB_list)):
+    
+    while( len(all_BB_list[i]) < max_len_BB):
+        all_BB_list[i].append(0)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+x_train_BB = np.array(all_BB_list[:2000])
+
+y_target_BB = np.array(individual_target_vector[:2000])
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+h_BB, model_BB = nn_model(x_train_BB, y_target_BB, 128)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+new_data_for_prediction_BB = np.array(all_BB_list[2000:3000])
+
+# y_true = np.array(target_vector[3750:5000])
+y_true_BB = np.array(individual_target_vector[2000:3000])
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+y_pred_BB = model_BB.predict(new_data_for_prediction_BB)
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+prediction_analysis_BB = []
+percente_error_analysis_BB = []
+y_pred_analysis_BB = []
+
+for i in range (0, 1000):
+    single_unit = []
+    
+    percente_error = (y_pred_BB[i][0]-y_true_BB[i])/y_true_BB[i]*100
+    percente_error_two_digit = float("{:.2f}".format(percente_error))
+    
+    single_unit.append(y_pred_BB[i][0])
+    single_unit.append(y_true_BB[i])
+    single_unit.append(percente_error_two_digit)
+    
+    y_pred_analysis_BB.append(y_pred_BB[i][0])
+    percente_error_analysis_BB.append(percente_error_two_digit)
+    
+    prediction_analysis_BB.append(single_unit)
+prediction_analysis_BB
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+fig = px.scatter(x = y_pred_analysis_BB, y= percente_error_analysis_BB)
+fig.update_traces(marker_size=8)
+fig.show()
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+desired_data_number_BB = 0 
+for i in range(0, len(percente_error_analysis_BB)):
+    
+    # if((percente_error_analysis_BB[i] > -10) & (percente_error_analysis_BB[i] < 10)):
+    if((percente_error_analysis_BB[i] > -20) & (percente_error_analysis_BB[i] < 20)):
+        desired_data_number_BB = desired_data_number_BB + 1
+
+percentage = desired_data_number_BB / len(percente_error_analysis_BB) *100
+percente_two_digit = float("{:.2f}".format(percentage))
+
+print(percente_two_digit, "%")
+
+# first 400
+# 256 neuron ===> 26.00 %
+# 128 neuron ===> 26.16 %
+
+# first 1250
+# 128 neuron ===> 6.16 %
+
+# %10 ===> 42.6 %
+# %20 ===> 81.5 %
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
+
+# RESULTS:
+
+#   MIV   # 
+# %10 --- 50.8 %
+# %20 --- 83.8 %
+
+# --------------------------- #
+# --------------------------- #
+
+#   CM   # 
+# %10 ===> 56.0 %
+# %20 ===> 89.6 %
+
+# --------------------------- #
+# --------------------------- #
+
+#   Bob   # 
+# %10 ===> 42.6 %
+# %20 ===> 81.5 %
+
+# --------------------------- #
+# --------------------------- #
+
+# 10% --> CM > MIV > BoB
+# 20% --> CM > MIV > BoB
+
+## -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- --  -- -- -- -- ##
